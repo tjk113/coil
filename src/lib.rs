@@ -3,25 +3,25 @@
 mod parser;
 mod lexer;
 
-use std::{collections::HashMap, fs::File, path::{Path, PathBuf}, io::{self, Write}};
+use std::{any::{Any, TypeId}, collections::HashMap, fs::File, path::{Path, PathBuf}, io::{self, Write}};
 use serde::{Deserialize, Serialize};
 use crate::parser::*;
 use crate::lexer::*;
 
 pub fn run() -> io::Result<()> {
     // Test code
-    // let mut database = Database::new(String::from("business"), DatabaseConfig::default());
-    // let customers = database.new_table(
-    //     String::from("customers"),
-    //     vec![Column::new(String::from("Name"), FieldType::Text),
-    //         Column::new(String::from("ID"), FieldType::Number)]
-    //     ).unwrap();
-    // customers.new_row(vec![FieldValue::Text(String::from("james")), FieldValue::Integer(1)]);
-    // customers.new_row(vec![FieldValue::Text(String::from("jim")), FieldValue::Integer(2)]);
-    // customers.new_row(vec![FieldValue::Text(String::from("jimmy")), FieldValue::Integer(3)]);
+    let mut database = Database::new(String::from("business"), DatabaseConfig::default());
+    let customers = database.new_table(
+        String::from("customers"),
+        vec![Column::new(String::from("Name"), FieldType::Text),
+            Column::new(String::from("ID"), FieldType::Number)]
+        ).unwrap();
+    customers.new_row(vec![FieldValue::Text(String::from("james")), FieldValue::Integer(1)]);
+    customers.new_row(vec![FieldValue::Text(String::from("jim")), FieldValue::Integer(2)]);
+    customers.new_row(vec![FieldValue::Text(String::from("jimmy")), FieldValue::Integer(3)]);
     // database.save();
     // let mut database = Database::from_file(Path::new("./business")).unwrap();
-    let mut database = Database::new(String::from("default"), DatabaseConfig::default());
+    // let mut database = Database::new(String::from("default"), DatabaseConfig::default());
 
     let mut lexer = Lexer::new();
     let mut parser = Parser::new();
@@ -37,7 +37,9 @@ pub fn run() -> io::Result<()> {
         // Lexing, parsing, and interpreting
         let tokens = Lexer::lex(&mut lexer, input);
         let query = Parser::parse(&mut parser, tokens);
+        // println!("{:#?}", query);
         let result = database.run_query(query);
+        // println!("{:#?}", result);
         result.unwrap().print();
     }
 
@@ -72,7 +74,7 @@ impl<'a> QueryResult<'a> {
         }
         table.add_row(prettytable::Row::new(cells));
         // Rows
-        for row in &self.table.unwrap().get_rows(None).unwrap() {
+        for row in self.rows.as_ref().unwrap() {
             let mut values: Vec<prettytable::Cell> = Vec::new();
             for name in &names {
                 values.push(prettytable::Cell::new(row.get(name).unwrap().to_string().as_str()));
@@ -142,8 +144,16 @@ impl Database {
         let mut result = QueryResult::new(query.operation);
         match result.operation {
             Operation::Get => {
-                result.table = self.get_table(query.table?);
-                // TODO: "where" clauses
+                let table = self.get_table(query.table?)?;
+                let mut rows;
+                if query.condition.is_some() {
+                    rows = table.get_rows(Some(*(query.condition?)));
+                }
+                else {
+                    rows = table.get_rows(None);
+                }
+                result.table = Some(table);
+                result.rows = rows;
             },
             Operation::Put => {
                 let _ = self.get_table_mut(query.table?)?.new_row(query.values?);
@@ -161,6 +171,7 @@ impl Database {
                 todo!("deletion");
             },
         }
+
         Some(result)
     }
 
@@ -228,10 +239,25 @@ impl Table {
 
     pub fn get_rows(&self, condition: Option<Expression>) -> Option<Vec<Row>> {
         let mut rows: Vec<Row> = Vec::new();
-        let _ = condition; // TODO
-        for i in 0..self.columns[0].rows.len() {
-            rows.push(Row::from_columns(&self.columns, i));
+        // I figured it's better to branch once before
+        // the loop than to branch and unwrap on every
+        // iteration. Unfortunately, this does end up
+        // looking very ugly!
+        if let Some(row_condition) = condition {
+            for i in 0..self.columns[0].rows.len() {
+                let row = Row::from_columns(&self.columns, i);
+                if row.check_condition(&row_condition) {
+                    rows.push(row);
+                }
+            }
         }
+        else {
+            for i in 0..self.columns[0].rows.len() {
+                let row = Row::from_columns(&self.columns, i);
+                rows.push(row);
+            }
+        }
+
         Some(rows)
     }
 }
@@ -252,6 +278,43 @@ impl Row {
 
     pub fn get(&self, field: &str) -> Option<&FieldValue> {
         self.columns.get(field)
+    }
+
+    // TODO: this function cannot handle nested expressions...
+    pub fn check_condition(&self, condition: &Expression) -> bool {
+        let l_operand = condition.l_operand.as_ref().unwrap();
+        let r_operand = condition.r_operand.as_ref().unwrap();
+        let mut l_value;
+        let mut r_value;
+        // Resolve identifier values and convert
+        // ExpressionTypes into FieldValues
+        if let ExpressionType::Identifier(identifier) = &l_operand.expression_type {
+            // TODO: this function should actually
+            // return a Result<bool> to handle errors
+            l_value = self.get(identifier.as_str()).unwrap().clone();
+        }
+        else {
+            l_value = FieldValue::from_expression_type(l_operand.expression_type.clone());
+        }
+        if let ExpressionType::Identifier(identifier) = &r_operand.expression_type {
+            r_value = self.get(identifier.as_str()).unwrap().clone();
+        }
+        else {
+            r_value = FieldValue::from_expression_type(r_operand.expression_type.clone());
+        }
+
+        match condition.expression_type {
+            ExpressionType::Equal => l_value == r_value,
+            ExpressionType::NotEqual => l_value != r_value,
+            ExpressionType::LessThan => l_value < r_value,
+            ExpressionType::LessThanOrEqual => l_value <= r_value,
+            ExpressionType::GreaterThan => l_value > r_value,
+            ExpressionType::GreaterThanOrEqual => l_value >= r_value,
+            // ExpressionType::And => l_value && r_value,
+            // ExpressionType::Or => l_value || r_value,
+            // ExpressionType::Xor => l_value != r_value,
+            _ => false
+        }
     }
 }
 
@@ -293,7 +356,7 @@ impl FieldType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Deserialize, Serialize)]
 pub enum FieldValue {
     None,
     Text(String),
@@ -302,8 +365,19 @@ pub enum FieldValue {
 }
 
 impl FieldValue {
+    pub fn from_expression_type(expression_type: ExpressionType) -> Self {
+        match expression_type {
+            ExpressionType::None => FieldValue::None,
+            ExpressionType::String(string) => FieldValue::Text(string),
+            ExpressionType::Integer(number) => FieldValue::Integer(number),
+            ExpressionType::Float(number) => FieldValue::Float(number),
+            // Hmm... this constructor could
+            // return an Option<Self> maybe...
+            _ => FieldValue::None
+        }
+    }
+
     pub fn to_string(&self) -> String {
-        // I don't know if there's a more concise way to do this
         match self {
             FieldValue::None => String::from("None"),
             FieldValue::Text(string) => string.to_string(),

@@ -10,13 +10,17 @@ pub enum Token {
     Table, Database,
     // Type Keywords
     NumberType, TextType,
-    // Operators
+    // Logical Operators
     Equal, NotEqual,
     LessThan, LessThanOrEqual,
     GreaterThan, GreaterThanOrEqual,
-    And, Or, Xor,
+    And, Or, Xor, Not,
+    // Arithmetic Operators
+    Add, Subtract, Divide,
+    Power, Modulus,
     // Misc
     Star, Comma, Period, Colon,
+    LeftParenthesis, RightParenthesis,
     LeftBracket, RightBracket,
     // Literals
     Integer(i64), Float(f64), String(String),
@@ -64,7 +68,6 @@ impl Lexer {
         if !self.consume('"') {
             return None;
         }
-
         Some(Token::String(string))
     }
 
@@ -138,9 +141,22 @@ impl Lexer {
         while let Some(c) = lexer.next() {
             match c {
                 ' ' | '\r' | '\n'  => continue,
-                '*' => tokens.push(Token::Star),
+                '+' => tokens.push(Token::Add),
+                '-' => tokens.push(Token::Subtract),
+                '*' => {
+                    if lexer.consume('*') {
+                        tokens.push(Token::Power)
+                    }
+                    else {
+                        tokens.push(Token::Star)
+                    }
+                },
+                '/' => tokens.push(Token::Divide),
+                '%' => tokens.push(Token::Modulus),
                 ',' => tokens.push(Token::Comma),
                 '.' => tokens.push(Token::Period),
+                '(' => tokens.push(Token::LeftParenthesis),
+                ')' => tokens.push(Token::RightParenthesis),
                 '[' => tokens.push(Token::LeftBracket),
                 ']' => tokens.push(Token::RightBracket),
                 ':' => tokens.push(Token::Colon),
@@ -150,7 +166,7 @@ impl Lexer {
                     tokens.push(string);
                 },
                 '<' => {
-                    if lexer.peek() == Some(&'=') {
+                    if lexer.consume('=') {
                         tokens.push(Token::LessThanOrEqual);
                     }
                     else {
@@ -158,7 +174,7 @@ impl Lexer {
                     }
                 },
                 '>' => {
-                    if lexer.peek() == Some(&'=') {
+                    if lexer.consume('=') {
                         tokens.push(Token::GreaterThanOrEqual);
                     }
                     else {
@@ -167,11 +183,11 @@ impl Lexer {
                 },
                 '=' => tokens.push(Token::Equal),
                 '!' => {
-                    if *(lexer.peek().unwrap()) == '=' {
+                    if lexer.consume('=') {
                         tokens.push(Token::NotEqual);
                     }
                     else {
-                        // TODO: error handling...
+                        tokens.push(Token::Not);
                     }
                 }
                 '0'..='9' => tokens.push(lexer.parse_number()),

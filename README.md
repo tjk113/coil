@@ -21,7 +21,7 @@ equality     -> comparison ( ( "=" | "!=" ) comparison )*
 comparison   -> term ( ( ">" | ">=" | "<" | "<=" ) term )*
 term         -> factor ( ( "-" | "+" ) factor )*
 factor       -> unary ( ( "/" | "*" | "**" | "%" ) unary )*
-unary        -> ( "not" | "-" | "+" )? unary
+unary        -> ( "!" | "-" | "+" )? unary
               | primary
 literal      -> number | string
 primary      -> literal | identifier | "none"

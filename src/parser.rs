@@ -13,7 +13,7 @@ pub enum Operation {
 // This is largely a copy of Token,
 // but only including the operators
 // and literals.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum ExpressionType {
     // Unary
     Not, Negate, Positive,
@@ -22,31 +22,44 @@ pub enum ExpressionType {
     LessThan, LessThanOrEqual,
     GreaterThan, GreaterThanOrEqual,
     And, Or, Xor,
+    // Arithmetic
+    Add, Subtract, Multiply, Divide,
+    Power, Modulus,
     // Literals
-    Number(f64), String(String),
+    Integer(i64), Float(f64), String(String),
     None, Identifier(String)
 }
 
-#[derive(Debug)]
-pub struct Expression<'a> {
-    // Literal expressions only use `expression_type`.
-    pub expression_type: ExpressionType,
-    // Unary expressions only use `l_operand`.
-    pub l_operand: Option<&'a Expression<'a>>,
-    pub r_operand: Option<&'a Expression<'a>>
+impl ExpressionType {
+    pub fn is_literal(&self) -> bool {
+        self == ExpressionType::Integer
+        || self == ExpressionType::Float
+        || self == ExpressionType::String
+        || self == ExpressionType::None
+        || self == ExpressionType::Identifier
+    }
 }
 
 #[derive(Debug)]
-pub struct Query<'a> {
+pub struct Expression {
+    // Literal expressions only use `expression_type`.
+    pub expression_type: ExpressionType,
+    // Unary expressions only use `l_operand`.
+    pub l_operand: Option<Box<Expression>>,
+    pub r_operand: Option<Box<Expression>>
+}
+
+#[derive(Debug)]
+pub struct Query {
     pub operation: Operation,
     pub database: Option<String>,
     pub table: Option<String>,
     pub values: Option<Vec<FieldValue>>,
     pub columns: Option<Vec<Column>>,
-    pub condition: Option<Expression<'a>>,
+    pub condition: Option<Box<Expression>>,
 }
 
-impl<'a> Query<'a> {
+impl Query {
     pub fn new(operation: Operation) -> Self {
         Query{operation: operation, database: None, table: None, values: None, columns: None, condition: None}
     }
@@ -54,13 +67,14 @@ impl<'a> Query<'a> {
 
 // Just your good ol' fashioned recursive descent parser.
 pub struct Parser {
-    tokens: Vec<Token>
+    tokens: Vec<Token>,
+    previous: Option<Token>
 }
 
 impl Parser {
     pub fn new() -> Self {
         // Placeholder value.
-        Parser{tokens: Vec::new()}
+        Parser{tokens: Vec::new(), previous: None}
     }
 
     pub fn parse(parser: &mut Parser, tokens: Vec<Token>) -> Query {
@@ -70,11 +84,16 @@ impl Parser {
     }
 
     fn next(&mut self) -> Option<Token> {
-        self.tokens.pop()
+        self.previous = self.tokens.pop();
+        self.previous.clone()
     }
 
     fn peek(&self) -> Option<&Token> {
         self.tokens.last()
+    }
+
+    fn peek_back(&self) -> Option<&Token> {
+        self.previous.as_ref()
     }
 
     fn consume(&mut self, expected: &[Token]) -> bool {
@@ -177,6 +196,10 @@ impl Parser {
             Token::Identifier(name) => { query.table = Some(name); },
             _ => { return None; }
         }
+
+        if self.consume(&[Token::Where]) {
+            query.condition = self.parse_or();
+        }
                 
         Some(query)
     }
@@ -237,43 +260,183 @@ impl Parser {
         Some(query)
     }
 
-    fn parse_or(&mut self) {
+    fn parse_or(&mut self) -> Option<Box<Expression>> {
         let mut expression = self.parse_and();
-        todo!("parse_or");
+
+        while self.consume(&[Token::Or]) {
+            let expression_type = match *self.peek_back()? {
+                Token::Or => ExpressionType::Or,
+                _ => { return None; }
+            };
+            let r_expression = self.parse_and();
+            expression = Some(Box::new(
+                Expression{expression_type: expression_type,
+                           l_operand: expression,
+                           r_operand: r_expression}));
+        }
+
+        expression
     }
 
-    fn parse_and(&mut self) {
+    fn parse_and(&mut self) -> Option<Box<Expression>> {
         let mut expression = self.parse_equality();
-        todo!("parse_and");
+
+        while self.consume(&[Token::And]) {
+            let expression_type = match *self.peek_back()? {
+                Token::And => ExpressionType::And,
+                _ => { return None; }
+            };
+            let r_expression = self.parse_equality();
+            expression = Some(Box::new(
+                Expression{expression_type: expression_type,
+                           l_operand: expression,
+                           r_operand: r_expression}));
+        }
+
+        expression
     }
 
-    fn parse_equality(&mut self) {
+    fn parse_equality(&mut self) -> Option<Box<Expression>> {
         let mut expression = self.parse_comparison();
-        todo!("parse_equality");
+        
+        while self.consume(&[Token::Equal, Token::NotEqual]) {
+            let expression_type = match *self.peek_back()? {
+                Token::Equal => ExpressionType::Equal,
+                Token::NotEqual => ExpressionType::NotEqual,
+                _ => { return None; }
+            };
+            let r_expression = self.parse_comparison();
+            expression = Some(Box::new(
+                Expression{expression_type: expression_type,
+                    l_operand: expression,
+                    r_operand: r_expression}));
+                }
+        expression
     }
 
-    fn parse_comparison(&mut self) {
+    fn parse_comparison(&mut self) -> Option<Box<Expression>> {
         let mut expression = self.parse_term();
-        todo!("parse_comparison");
+
+        while self.consume(&[Token::GreaterThan, Token::GreaterThanOrEqual,
+                             Token::LessThan, Token::LessThanOrEqual]) {
+            let expression_type = match *self.peek_back()? {
+                Token::GreaterThan => ExpressionType::GreaterThan,
+                Token::GreaterThanOrEqual => ExpressionType::GreaterThanOrEqual,
+                Token::LessThan => ExpressionType::LessThan,
+                Token::LessThanOrEqual => ExpressionType::LessThanOrEqual,
+                _ => { return None; }
+            };
+            let r_expression = self.parse_term();
+            expression = Some(Box::new(
+                Expression{expression_type: expression_type,
+                           l_operand: expression,
+                           r_operand: r_expression}));
+        }
+
+        expression
     }
 
-    fn parse_term(&mut self) {
+    fn parse_term(&mut self) -> Option<Box<Expression>> {
         let mut expression = self.parse_factor();
-        todo!("parse_term");
+
+        while self.consume(&[Token::Add, Token::Subtract]) {
+            let expression_type = match *self.peek_back()? {
+                Token::Add => ExpressionType::Add,
+                Token::Subtract => ExpressionType::Subtract,
+                _ => { return None; }
+            };
+            let r_expression = self.parse_factor();
+            expression = Some(Box::new(
+                Expression{expression_type: expression_type,
+                           l_operand: expression,
+                           r_operand: r_expression}));
+        }
+
+        expression
     }
 
-    fn parse_factor(&mut self) {
+    fn parse_factor(&mut self) -> Option<Box<Expression>> {
         let mut expression = self.parse_unary();
-        todo!("parse_factor");
+
+        while self.consume(&[Token::Star, Token::Divide,
+                             Token::Power, Token::Modulus]) {
+            let expression_type = match *self.peek_back()? {
+                Token::Star => ExpressionType::Multiply,
+                Token::Divide => ExpressionType::Divide,
+                Token::Power => ExpressionType::Power,
+                Token::Modulus => ExpressionType::Modulus,
+                _ => { return None; }
+            };
+            let r_expression = self.parse_unary();
+            expression = Some(Box::new(
+                Expression{expression_type: expression_type,
+                           l_operand: expression,
+                           r_operand: r_expression}));
+        }
+
+        expression
     }
 
-    fn parse_unary(&mut self) {
+    fn parse_unary(&mut self) -> Option<Box<Expression>> {
         let mut expression = self.parse_primary();
-        todo!("parse_unary");
+
+        while self.consume(&[Token::Not, Token::Add, Token::Subtract]) {
+            let expression_type = match *self.peek_back()? {
+                Token::Not => ExpressionType::Not,
+                Token::Add => ExpressionType::Positive,
+                Token::Subtract => ExpressionType::Negate,
+                _ => { return None; }
+            };
+            let r_expression = self.parse_primary();
+            expression = Some(Box::new(
+                Expression{expression_type: expression_type,
+                           l_operand: expression,
+                           r_operand: r_expression}));
+        }
+
+        expression
     }
 
-    fn parse_primary(&mut self) {
-        let mut expression: Expression;
-        todo!("parse_primary");
+    fn parse_primary(&mut self) -> Option<Box<Expression>> {
+        let mut expression: Option<Box<Expression>> = None;
+
+        let is_primary_type = |token: &Token| {
+            match *token {
+                Token::None
+                | Token::Integer(_)
+                | Token::Float(_)
+                | Token::String(_)
+                | Token::Identifier(_) => true,
+                _ => false
+            }
+        };
+
+        while is_primary_type(self.peek()?) {
+            let next = self.next();
+            let expression_type = match next? {
+                Token::None => Some(ExpressionType::None),
+                Token::Integer(number) => Some(ExpressionType::Integer(number)),
+                Token::Float(number) => Some(ExpressionType::Float(number)),
+                Token::String(string) => Some(ExpressionType::String(string)),
+                Token::Identifier(identifier) => Some(ExpressionType::Identifier(identifier)),
+                _ => None
+            };
+
+            if expression_type.is_none() && *self.peek()? == Token::LeftParenthesis {
+                let grouped_expression = self.parse_or();
+                if !self.consume(&[Token::RightParenthesis]) {
+                    return None;
+                }
+                expression = grouped_expression;
+                return expression;
+            }
+            else {
+                expression = Some(Box::new(
+                    Expression{expression_type: expression_type.unwrap(),
+                        l_operand: None, r_operand: None}));
+                return expression;
+            }
+        }
+        None
     }
 }
